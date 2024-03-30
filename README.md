@@ -1,4 +1,4 @@
-# vhost-nginx
+# nginx-vhost
 Bash script to create quickly a web environment for a local host on Nginx.
 
 # Functionality
