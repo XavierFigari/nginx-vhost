@@ -1,5 +1,5 @@
 # vhost-nginx
-Bash script to create quicly a web environment for a local host on Nginx.
+Bash script to create quickly a web environment for a local host on Nginx.
 
 # Functionality
 Creates a virtual host on the local host (127.0.0.1)
