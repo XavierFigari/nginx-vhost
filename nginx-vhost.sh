@@ -206,9 +206,8 @@ printDebugAndExit() {
     if [[ "${answer}" == "y" ]]; then
         echo
         cleanup
-        echo
     fi
-    echo "Exiting..."
+    echo -e "\nExiting..."
     echo
     exit 1
 }
@@ -286,8 +285,8 @@ EOF
 if [ ! -z $phpVersion ]; then
     cat >>$nginxConfigCandidate <<EOF2
     location ~\.php$ {
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-        fastcgi_param QUERY_STRING    $query_string;
+        fastcgi_param SCRIPT_FILENAME "$document_root$fastcgi_script_name";
+        fastcgi_param QUERY_STRING    "$query_string";
         fastcgi_pass unix:/var/run/php/php-fpm.sock;
     }
 EOF2
@@ -297,8 +296,6 @@ fi
 echo "}" >>$nginxConfigCandidate
 
 ## Let's print out the config file and ask for user permission before continuing :
-#echo
-#echo
 #echo "Nginx vhost config file candidate :"
 #echo "-----------------------------------"
 #cat $nginxConfigCandidate
@@ -344,14 +341,6 @@ printStrAndDots "Creating $wwwDir"
 mkdir $wwwDir
 echo "Done."
 
-printStrAndDots "Changing group to www-data on $wwwDir"
-chgrp -R www-data $wwwDir
-echo "Done."
-
-printStrAndDots "Changing r/w permissions on $wwwDir (dirs:2750 files:640)"
-sudo find $wwwDir -type d -exec chmod 2750 {} \;
-sudo find $wwwDir -type f -exec chmod 640 {} \;
-echo "Done."
 
 ################################################################################
 ### Create sample test page
@@ -367,8 +356,26 @@ echo "If you see this message, it means Nginx was able" >>$indexFilename
 echo "to route http://$hostName to $wwwDir" >>$indexFilename
 echo "You can now modify your web site under $wwwDir" >>$indexFilename
 
-# not necessary as rights previously set above : chown www-data:www-data $indexFilename
+echo "Done."
 
+################################################################################
+### Set rwx permissions
+################################################################################
+# let's assume the user who's running this script (with sudo) should be the owner of files and dirs in /var/www
+# In a future version, an option should be added to set the user.
+runningUser=${SUDO_USER:-${USER}}
+printStrAndDots "Changing owner and group of $wwwDir to $runningUser:www-data"
+chown -R $runningUser:www-data $wwwDir
+echo "Done."
+
+# let's set permissions as follows :
+# - user  : rwx (7) on dirs, rw- (6) on files : can modify dirs and files
+# - group : r-x (5) on dirs, r-- (4) on files : group is www-data : can only read
+# - other : --- (0) on dirs, --- (0) on files : no permissions at all
+# On top of that, set the GUID bit (2) so that files created inside will inherit group www-data
+printStrAndDots "Changing r/w permissions on $wwwDir (dirs:2750 files:640)"
+sudo find $wwwDir -type d -exec chmod 2750 {} \;
+sudo find $wwwDir -type f -exec chmod 640 {} \;
 echo "Done."
 
 ################################################################################
@@ -447,5 +454,11 @@ if [[ $curlResponse = "HTTP/1.1 200 OK" ]]; then
     fi
 else
     echoError "Something went wrong... Cannot reach local website at $hostName"
+    echo
+    echo "What you can do :"
+    echo "- check file and dir permissions under $wwwDir"
+    echo "- make sure /etc/hosts contains '127.0.0.1 $hostName'"
+    echo "- check nginx error log : tail /var/log/nginx/error.log"
+    echo
     printDebugAndExit
 fi
