@@ -1,13 +1,57 @@
 #!/bin/bash
 
-### This script must be run as root
+# nginx-vhost.sh
+
+# This Bash script creates a virtual host that can be ran by Nginx/php-fpm in a local development environment.
+# It creates the necessary files and hooks that enable Nginx to route "http://hostname" http requests
+# to a simple web site created in /var/www/hostname.
+# As this involves many steps that may fail depending on your Nginx and PHP installation, many verifications are
+# made along the script. I may have missed some of them, please feel free to report any bugs.
+# Because this script is modifying files under /etc and /var, it must be ran with root privileges.
+
+# This is free and open source software.
+
+# TO DO :
+#
+# - allow user to choose php-fpm version. For now, the 'fastcgi_pass' directive in the server configuration
+# points to a generic "unix:/var/run/php/php-fpm.sock" file, that should normally be a link to the last
+# version of PHP installed on the system. I haven't made any check on that.
+# - add some checks on PHP execution. For now, I only check HTML execution.
+
+# Author : Xavier Figari, april 2024.
+
+# Enable debug mode by running your script as TRACE=1 ./script.sh instead of ./script.sh
+if [[ "${TRACE-0}" == "1" ]]; then
+    set -o xtrace
+fi
+RED="$(tput setaf 1)"
+RED="$(tput setaf 1)"
+
+# COLOR                   #  RGB
+BLACK="$(tput setaf 0)"   #  0, 0, 0
+GREEN="$(tput setaf 2)"   #  0,max,0
+YELLOW="$(tput setaf 3)"  #  max,max,0
+BLUE="$(tput setaf 4)"    #  0,0,max
+MAGENTA="$(tput setaf 5)" #  max,0,max
+CYAN="$(tput setaf 6)"    #  0,max,max
+WHITE="$(tput setaf 7)"   #  max,max,max
+
+RED="$(tput setaf 1)"     #  max,0,0
+NOCOLOR="$(tput sgr0)"
+
+################################################################################
+### This script must be run with root privileges
+################################################################################
 if [[ $EUID -ne 0 ]]; then
-    echo "This script must have root privileges. Type :"
+    echo -e "${RED}Error:${NOCOLOR} This script must be run with root privileges. Type :"
     echo "sudo $0 $@"
     exit 1
 fi
 
+################################################################################
 ### User must belong to group www-data
+################################################################################
+# Well, technically not for running this script, but necessary afterwards.
 if id -nG | grep -qw www-data; then
     echo "You must belong to www-data group. Add yourself with :"
     echo "    sudo usermod -a -G www-data $LOGNAME"
@@ -17,20 +61,28 @@ if id -nG | grep -qw www-data; then
     exit 1
 fi
 
+################################################################################
 ### Some display functions
+################################################################################
+
 printUsage() {
+    echo
+    echo $(basename $0)
+    echo
     echo "USAGE :"
     echo "    $(basename $0) -n <vhostName>"
     echo
-    echo "Creates a virtual host for Nginx."
+    echo "DESCRIPTION :"
     echo
-    echo "The name provided with the '-n' argument will be used to access the host through https://vhostName".
-    echo "The following actions will be executed :"
+    echo "    Creates a virtual host for Nginx, accessible through https://vhostName"
     echo
-    echo "- create a vhost configuration file for Nginx in /etc/nginx/sites-available"
-    echo "- create a link from  /etc/nginx/sites-enabled to this config file"
-    echo "- add a line in /etc/hosts to point local host (127.0.0.1) to the vhostName"
-    echo "- stop Apache service, start Nginx service, check site access."
+    echo "    The following actions will be executed :"
+    echo
+    echo "    - create a vhost configuration file for Nginx in /etc/nginx/sites-available/vhostName.conf"
+    echo "    - create a link from  /etc/nginx/sites-enabled to this config file"
+    echo "    - add a line in /etc/hosts to resolve vhostName to local host (127.0.0.1)"
+    echo "    - stop Apache service (if running, to avoid conflicts on port 80), start Nginx service"
+    echo "    - test if site is reachable and returns HTTP 200 status."
     echo
     exit 1
 }
@@ -41,17 +93,45 @@ printStrAndDots() {
     printf "%s " "$1"
     printf '%0.s.' $(seq 1 $dotLength)
     printf " "
-    sleep 0.5
+    # sleep 0.3
 }
 
-echoError() {
-    echo ""
-    echo "******************** ERROR ********************"
-    printf "$1\n"
-    echo "***********************************************"
+function box_out() {
+    # Nice function from https://unix.stackexchange.com/questions/70615/bash-script-echo-output-in-box#70616
+    local s=("$@") b w
+    for l in "${s[@]}"; do
+        ((w < ${#l})) && {
+            b="$l"
+            w="${#l}"
+        }
+    done
+    tput setaf 3
+    echo "
++-${b//?/-}-+
+| ${b//?/ } |"
+    for l in "${s[@]}"; do
+        printf '| %s%*s%s |\n' "$(tput sgr 0)" "-$w" "$l" "$(tput setaf 3)"
+    done
+    echo "| ${b//?/ } |
++-${b//?/-}-+"
+    tput sgr 0
 }
 
+function echoError() {
+    echo
+    local s="$*"
+    tput setaf 1
+    echo "+-${s//?/-}-+
+| ${s//?/ } |
+| $(tput setaf 5)$s$(tput setaf 1) |
+| ${s//?/ } |
++-${s//?/-}-+"
+    tput sgr 0
+}
+
+################################################################################
 ### Parse command line arguments
+################################################################################
 
 while getopts 'n:' opt; do
     case "$opt" in
@@ -75,32 +155,69 @@ done
 shift "$(($OPTIND - 1))"
 
 if [ -n "$hostName" ]; then
-    echo
-    echo "|-----------------------------------------------------------"
-    echo "| Creating Nginx configuration for host name = $hostName"
-    echo "|-----------------------------------------------------------"
+    box_out "Creating Nginx configuration for host name = $hostName"
     echo
 else
     printUsage
     exit 1
 fi
 
-#### Set some variables and debug function
+################################################################################
+### Set some variables and functions
+################################################################################
 
-# vhost configuration file : WARNING : must end with ".conf" to be loaded by Nginx unless
-# specified otherwise in /etc/nginx/nginx.conf
+# vhost configuration file : WARNING : must end with ".conf" to be loaded by Nginx
+# unless specified otherwise in /etc/nginx/nginx.conf
 nginxConfig=/etc/nginx/sites-available/$hostName.conf
 nginxConfigEnabled=/etc/nginx/sites-enabled/$hostName.conf
 nginxConfigCandidate=/etc/nginx/sites-available/$hostName.conf.candidate
 wwwDir=/var/www/$hostName
 
+backup_dir=/etc/hosts_backup
+
+mkbackupdir() {
+    if [[ ! -d "${backup_dir}" ]]; then
+        mkdir 2>/dev/null "${backup_dir}"
+    fi
+}
+
+backupEtcHosts() {
+    mkbackupdir
+    NOW=$(date +"%Y-%m-%d_%Hh%Mm%Ss")
+    cp -p /etc/hosts $backup_dir/hosts-${NOW}
+}
+
+cleanup() {
+    mkbackupdir
+    NOW=$(date +"%Y-%m-%d_%Hh%Mm%Ss")
+    cp -p /etc/hosts $backup_dir/hosts-${NOW}
+    grep -v $hostName $backup_dir/hosts-${NOW} >/etc/hosts
+    echo -e "\n/etc/hosts cleaned up. Backups are in $backup_dir"
+
+    rm $nginxConfig
+    echo -e "Removed $nginxConfig"
+    rm $nginxConfigEnabled
+    echo -e "Removed $nginxConfigEnabled"
+    rm -r $wwwDir
+    echo -e "Removed $wwwDir"
+}
+
 printDebugAndExit() {
     printDebug
+    read -r -p "Do you want me to clean up modified files before exiting (y/n) ? " -n1 answer 2>&1 || :
+    if [[ "${answer}" == "y" ]]; then
+        echo
+        cleanup
+        echo
+    fi
+    echo "Exiting..."
+    echo
     exit 1
 }
 
 printDebug() {
     echo
+    echo "---------------------------------------------------------------------------------------------------"
     echo "* The following files may have been modified : enter the following commands to edit them manually :"
     echo
     echo "sudo vim $nginxConfig"
@@ -113,10 +230,13 @@ printDebug() {
     echo "sudo rm $nginxConfig"
     echo "sudo rm $nginxConfigEnabled"
     echo "sudo rm -r $wwwDir"
+    echo "---------------------------------------------------------------------------------------------------"
     echo
 }
 
-#### Prerequisites
+################################################################################
+### Test if PHP and Nginx are installed
+################################################################################
 
 ## Check PHP version
 printStrAndDots "Checking if PHP is installed"
@@ -128,7 +248,7 @@ else
 fi
 
 ## Check nginx is installed
-printStrAndDots "Checking Nginx is installed"
+printStrAndDots "Checking if Nginx is installed"
 nginxVersion=$(nginx -v |& awk '{print $3}')
 if [ -z $nginxVersion ]; then
     echo "no !"
@@ -138,27 +258,19 @@ else
     echo "yes : Nginx version = $nginxVersion"
 fi
 
-### /var/www must belong to www-data:www-data
-#printStrAndDots "Checking /var/www belongs to group www-data"
-#if [ "$(stat -c "%G" /var/www)" == "www-data" ]; then
-#    echo "yes"
-#else
-#    echo "no, changing it..."
-#    chgrp www-data /var/www
-#    exit 1
-#fi
-
-#### Create Nginx host config file
+################################################################################
+### Create Nginx host config file
+################################################################################
 
 printStrAndDots "Creating host configuration in $nginxConfig"
 
 if [ -f $nginxConfig ]; then
     echo "failed !"
-    echoError "Error : file $nginxConfig already exists. \nChoose another host name or remove this file manually and run this script again."
+    echoError "Error : file $nginxConfig already exists."
     printDebugAndExit
 fi
 
-if [ -f $nginxConfigCandidate ] ; then
+if [ -f $nginxConfigCandidate ]; then
     rm $nginxConfigCandidate
 fi
 
@@ -172,17 +284,18 @@ server {
   root /var/www/$hostName;
 EOF
 
-# append PHP fpm config if PHP is installed
+# append php-fpm/fastcgi basic config if PHP is installed
 if [ ! -z $phpVersion ]; then
-  cat >>$nginxConfigCandidate <<EOF2
-  location ~\.php$ {
-      include snippets/fastcgi-php.conf;
-      fastcgi_pass unix:/var/run/php/php-fpm.sock;
-  }
+    cat >>$nginxConfigCandidate <<EOF2
+    location ~\.php$ {
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param QUERY_STRING    $query_string;
+        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+    }
 EOF2
 fi
 
-# print final brace :
+# print final curly brace :
 echo "}" >>$nginxConfigCandidate
 
 ## Let's print out the config file and ask for user permission before continuing :
@@ -200,20 +313,24 @@ echo "}" >>$nginxConfigCandidate
 #        "Edit file" ) echo "Make edits to this file manually"; $EDITOR $nginxConfigCandidate; mv $nginxConfigCandidate $nginxConfig; break ;
 #    esac
 #done
+
 mv "$nginxConfigCandidate" "$nginxConfig"
 echo "Done."
 
+################################################################################
 ## Enable the website
+################################################################################
 printStrAndDots "Enabling the web site : creating link from sites-available to sites-enabled"
-if ln -s $nginxConfig /etc/nginx/sites-enabled/ ; then
+if ln -s $nginxConfig /etc/nginx/sites-enabled/; then
     echo "Done."
 else
     echoError "Please remove link /etc/nginx/sites-enabled/$nginxConfig and restart this script"
     printDebugAndExit
 fi
 
-#### Create web directory
-
+################################################################################
+## Create web directory in /var/www
+################################################################################
 
 if [ -d $wwwDir ]; then
     echoError "Directory $wwwDir already exists. Remove or rename it before running this script."
@@ -226,7 +343,7 @@ if [ ! -d /var/www ]; then
 fi
 
 printStrAndDots "Creating $wwwDir"
-mkdir -p $wwwDir
+mkdir $wwwDir
 echo "Done."
 
 printStrAndDots "Changing group to www-data on $wwwDir"
@@ -238,24 +355,37 @@ sudo find $wwwDir -type d -exec chmod 2750 {} \;
 sudo find $wwwDir -type f -exec chmod 640 {} \;
 echo "Done."
 
+################################################################################
 ### Create sample test page
+################################################################################
+# Don't bother with HTML tags, a simple text is enough. It simplifies testing.
+# Note : a php test page should be made too to verify php-fpm !
 
 indexFilename=$wwwDir/index.html
 printStrAndDots "Creating test file : $indexFilename"
 
-echo "Vhost $hostName is setup." >$indexFilename
-echo "Modify it under $wwwDir" >>$indexFilename
+echo "$hostName" >$indexFilename
+echo "If you see this message, it means Nginx was able" >>$indexFilename
+echo "to route http://$hostName to $wwwDir" >>$indexFilename
+echo "You can now modify your web site under $wwwDir" >>$indexFilename
 
 # not necessary as rights previously set above : chown www-data:www-data $indexFilename
 
 echo "Done."
 
+################################################################################
 ### Create a line in /etc/hosts
+################################################################################
 printStrAndDots "Creating a line in /etc/hosts to link localhost to $hostName"
+# as a precaution, backup the hosts file before touching it.
+backupEtcHosts
+# Create a simple link from hostName to localhost :
 echo "127.0.0.1		$hostName" >>/etc/hosts
 echo "Done."
 
-### Stop Apache service
+################################################################################
+### Stop Apache service if it's running
+################################################################################
 printStrAndDots "Stopping Apache service"
 if pidof apache2 >/dev/null; then
     service apache2 stop
@@ -264,11 +394,11 @@ else
     echo "Not necessary."
 fi
 
+################################################################################
 ### Reload Nginx service to actualize configuration
+################################################################################
 printStrAndDots "Restarting nginx service"
-if systemctl reload-or-restart nginx.service; then
-    echo "Done."
-else
+if ! systemctl reload-or-restart nginx.service; then
     echo
     echoError "nginx service cannot be restarted. Check config file : $nginxConfig"
     printDebugAndExit
@@ -276,31 +406,48 @@ fi
 
 # Make sure it's active
 if systemctl is-active --quiet nginx.service; then
-   # ok
+    echo "Done. Active."
 else
-    echoError "nginx service is not active"
+    echo
+    echoError "Nginx service is not active, it could not be restarted. Check /var/log/nginx/error.log"
     printDebugAndExit
 fi
 
-### Test page
-echo
-echo "|---------|"
-echo "| Testing |"
-echo "|---------|"
-echo
+################################################################################
+### Final test
+################################################################################
+
 printStrAndDots "Accessing $hostName with curl"
-if [[ $(curl -Is "$hostName" | head -1) == "HTTP/1.1 200 OK" ]] ; then
-    echo
-    printDebug
-    echo
-    echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°"
-    curl "$hostName"
-    echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°"
-    echo
-    echo "Everything looks good !"
-    echo
+
+# Get the first line of "curl -Is", that should start with the HTTP response. Remove trailing Carriage Return.
+curlResponse=$(curl -Is $hostName | head -1 | sed 's/\r//')
+
+# If we get an "HTTP/1.1 200 OK" response, we're on the right track !
+if [[ $curlResponse = "HTTP/1.1 200 OK" ]]; then
+    # One last check : the page content should start with our host name (because we wrote it above)
+    # If it doesn't, it means that Nginx was unable to parse the vhost config file,
+    # and does not redirect http request to the right /var/www/hostname root.
+    if [[ $(curl $hostName 2>/dev/null | head -1 | sed 's/\r//') == $hostName ]]; then
+        echo
+        # printDebug
+        echo
+        # Display web page in green :
+        tput setaf 2
+        echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°"
+        curl "$hostName"
+        echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°"
+        echo
+        echo "Everything looks good !"
+        echo
+        tput sgr 0
+    else
+        echoError "Server $hostName can be reached, but doesn't redirect to $wwwDir"
+        echo
+        echo "This might be due to an error in the Nginx config file : $nginxConfig"
+        echo "Run 'curl $hostName' manually and check for errors in /var/log/nginx/error.log"
+        printDebugAndExit
+    fi
 else
     echoError "Something went wrong... Cannot reach local website at $hostName"
     printDebugAndExit
 fi
-
