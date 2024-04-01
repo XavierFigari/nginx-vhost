@@ -24,17 +24,15 @@
 if [[ "${TRACE-0}" == "1" ]]; then
     set -o xtrace
 fi
-RED="$(tput setaf 1)"
-RED="$(tput setaf 1)"
 
 # COLOR                   #  RGB
-BLACK="$(tput setaf 0)"   #  0, 0, 0
-GREEN="$(tput setaf 2)"   #  0,max,0
-YELLOW="$(tput setaf 3)"  #  max,max,0
-BLUE="$(tput setaf 4)"    #  0,0,max
-MAGENTA="$(tput setaf 5)" #  max,0,max
-CYAN="$(tput setaf 6)"    #  0,max,max
-WHITE="$(tput setaf 7)"   #  max,max,max
+#BLACK="$(tput setaf 0)"   #  0, 0, 0
+#GREEN="$(tput setaf 2)"   #  0,max,0
+#YELLOW="$(tput setaf 3)"  #  max,max,0
+#BLUE="$(tput setaf 4)"    #  0,0,max
+#MAGENTA="$(tput setaf 5)" #  max,0,max
+#CYAN="$(tput setaf 6)"    #  0,max,max
+#WHITE="$(tput setaf 7)"   #  max,max,max
 
 RED="$(tput setaf 1)"     #  max,0,0
 NOCOLOR="$(tput sgr0)"
